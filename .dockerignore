@@ -1,0 +1,12 @@
+# Exclude large training data (not needed in inference image)
+HUST-OBC/
+yolo_dataset/images/
+yolo_dataset/labels/
+classifier_output/last.pth
+
+# Exclude dev files
+.git/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
