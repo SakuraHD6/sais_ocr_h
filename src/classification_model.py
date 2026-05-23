@@ -3,6 +3,7 @@ EfficientNet/Transformer + ArcFace classifier for ancient character recognition.
 Backbone architecture is determined from the checkpoint at runtime.
 """
 import json
+import os
 import torch
 import torch.nn as nn
 from torchvision import transforms
@@ -35,6 +36,7 @@ class CharacterClassifier:
         img_size = checkpoint.get("img_size", 128)
         self.class_to_idx = checkpoint["class_to_idx"]
         self.idx_to_class = {v: k for k, v in self.class_to_idx.items()}
+        self.merged_class_policy = os.getenv("MERGED_CLASS_POLICY", "common").lower()
 
         # Timm model name mapping
         TIMM_NAMES = {
@@ -76,6 +78,33 @@ class CharacterClassifier:
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
 
+    @staticmethod
+    def _cjk_priority(text):
+        if len(text) != 1:
+            return (4, len(text), text)
+        codepoint = ord(text)
+        if 0x4E00 <= codepoint <= 0x9FFF:
+            return (0, codepoint)
+        if 0x3400 <= codepoint <= 0x4DBF:
+            return (1, codepoint)
+        if 0x20000 <= codepoint <= 0x2EBEF:
+            return (2, codepoint)
+        return (3, codepoint)
+
+    def _resolve_merged_class(self, class_id):
+        candidates = [
+            self.id_to_char[cid]
+            for cid in class_id.split("_")
+            if cid in self.id_to_char
+        ]
+        if not candidates:
+            return None
+        if self.merged_class_policy == "first":
+            return candidates[0]
+        if self.merged_class_policy == "last":
+            return candidates[-1]
+        return min(candidates, key=self._cjk_priority)
+
     def predict(self, pil_image):
         """Classify a single character crop. Returns (char, confidence)."""
         img = self.transform(pil_image).unsqueeze(0).to(self.device)
@@ -90,12 +119,7 @@ class CharacterClassifier:
         # Convert numeric ID to Chinese character if mapping exists
         char = self.id_to_char.get(class_id)
         if char is None and '_' in class_id:
-            # Merged class (e.g. "0011_0012_0013"): take the first mapped component
-            for cid in class_id.split('_'):
-                c = self.id_to_char.get(cid)
-                if c:
-                    char = c
-                    break
+            char = self._resolve_merged_class(class_id)
         if char is None:
             char = class_id
         return char, confidence.item()

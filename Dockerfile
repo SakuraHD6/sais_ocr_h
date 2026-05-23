@@ -19,6 +19,7 @@ ENV TZ=Asia/Shanghai \
     NMS_IOU_THRESHOLD=0.45 \
     POST_CONFIDENCE_THRESHOLD=0.0 \
     MAX_OUTPUT_PER_IMAGE=0 \
+    MERGED_CLASS_POLICY=common \
     PIL_LOG_LEVEL=ERROR
 
 RUN mkdir -p /app /saisresult
