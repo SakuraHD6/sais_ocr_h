@@ -28,7 +28,7 @@ torch.backends.cudnn.benchmark = False
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from src.detection_model import YOLODetector
+from src.detection_model import YOLODetector, filter_predictions
 from src.classification_model import CharacterClassifier
 
 
@@ -38,10 +38,14 @@ DETECTION_WEIGHTS = os.getenv("DETECTION_WEIGHTS", "/app/yolo_dataset/weights/be
 CLASSIFIER_WEIGHTS = os.getenv("CLASSIFIER_WEIGHTS", "/app/classifier_output/best.pth")
 ID_TO_CHAR_MAPPING = os.getenv("ID_TO_CHAR_MAPPING", "/app/char_mapping.json")
 DEVICE = os.getenv("DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.45"))
 HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
-MAX_DET = int(os.getenv("MAX_DET", "300"))
+MAX_DET = int(os.getenv("MAX_DET", "100"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
+MIN_BOX_SIZE = int(os.getenv("MIN_BOX_SIZE", "10"))
+NMS_IOU_THRESHOLD = float(os.getenv("NMS_IOU_THRESHOLD", "0.45"))
+POST_CONFIDENCE_THRESHOLD = float(os.getenv("POST_CONFIDENCE_THRESHOLD", "0.0"))
+MAX_OUTPUT_PER_IMAGE = int(os.getenv("MAX_OUTPUT_PER_IMAGE", "0"))
 
 
 def find_images():
@@ -98,14 +102,34 @@ def main():
                 char_img = crop["image"]
                 char_id, rec_conf = classifier.predict(char_img)
                 det_conf = crop["confidence"]
-                combined_conf = det_conf * rec_conf
                 predictions.append({
                     "bbox": bbox,
                     "text": char_id,
-                    "confidence": round(combined_conf, 4),
+                    "confidence": float(det_conf),
+                    "recognition_confidence": float(rec_conf),
                 })
 
-            results[image_id] = predictions
+            predictions = filter_predictions(
+                predictions,
+                min_size=MIN_BOX_SIZE,
+                conf_threshold=POST_CONFIDENCE_THRESHOLD,
+                nms_threshold=NMS_IOU_THRESHOLD,
+            )
+            if MAX_OUTPUT_PER_IMAGE > 0 and len(predictions) > MAX_OUTPUT_PER_IMAGE:
+                predictions = sorted(
+                    predictions,
+                    key=lambda item: item.get("confidence", 0.0),
+                    reverse=True,
+                )[:MAX_OUTPUT_PER_IMAGE]
+            predictions = sorted(predictions, key=lambda item: (item["bbox"][1], item["bbox"][0]))
+
+            results[image_id] = [
+                {
+                    "bbox": [int(v) for v in pred["bbox"]],
+                    "text": str(pred["text"]),
+                }
+                for pred in predictions
+            ]
         except Exception as e:
             print(f"Warning: failed to process {img_path}: {e}")
             results[image_id] = []

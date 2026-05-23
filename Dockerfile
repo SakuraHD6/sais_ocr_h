@@ -12,9 +12,13 @@ ENV TZ=Asia/Shanghai \
     LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64:/usr/local/cuda-12.4/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/usr/local/cuda/compat \
     YOLO_CONFIG_DIR=/tmp/Ultralytics \
     HALF=1 \
-    MAX_DET=300 \
+    MAX_DET=100 \
     YOLO_IMGSZ=1280 \
-    CONFIDENCE_THRESHOLD=0.25 \
+    CONFIDENCE_THRESHOLD=0.45 \
+    MIN_BOX_SIZE=10 \
+    NMS_IOU_THRESHOLD=0.45 \
+    POST_CONFIDENCE_THRESHOLD=0.0 \
+    MAX_OUTPUT_PER_IMAGE=0 \
     PIL_LOG_LEVEL=ERROR
 
 RUN mkdir -p /app /saisresult

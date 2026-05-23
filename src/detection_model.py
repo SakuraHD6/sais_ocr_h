@@ -104,13 +104,14 @@ def filter_predictions(predictions, img_width=None, img_height=None,
 
 class YOLODetector:
     def __init__(self, weights_path, device="cuda:0", conf=0.25,
-                 half=False, max_det=300, imgsz=1280):
+                 half=False, max_det=300, imgsz=1280, crop_padding=0.15):
         self.model = YOLO(weights_path)
         self.device = device
         self.conf = conf
         self.half = half
         self.max_det = max_det
         self.imgsz = imgsz
+        self.crop_padding = crop_padding
 
     def detect_and_crop(self, image_path):
         """Run detection and return cropped character regions."""
@@ -137,18 +138,23 @@ class YOLODetector:
         scores = result.boxes.conf.cpu().numpy()
 
         for box, score in zip(boxes, scores):
-            x1, y1, x2, y2 = map(int, box)
-            # Add 15% padding for better classification context
-            pad_w = int((x2 - x1) * 0.15)
-            pad_h = int((y2 - y1) * 0.15)
-            x1, y1 = max(0, x1 - pad_w), max(0, y1 - pad_h)
-            x2, y2 = min(img.width, x2 + pad_w), min(img.height, y2 + pad_h)
-            if x2 <= x1 or y2 <= y1:
+            raw_x1, raw_y1, raw_x2, raw_y2 = [int(round(v)) for v in box]
+            raw_x1, raw_y1 = max(0, raw_x1), max(0, raw_y1)
+            raw_x2, raw_y2 = min(img.width, raw_x2), min(img.height, raw_y2)
+            if raw_x2 <= raw_x1 or raw_y2 <= raw_y1:
                 continue
 
-            crop = img.crop((x1, y1, x2, y2))
+            # Keep the submitted bbox tight; use padding only for the classifier crop.
+            pad_w = int((raw_x2 - raw_x1) * self.crop_padding)
+            pad_h = int((raw_y2 - raw_y1) * self.crop_padding)
+            crop_x1 = max(0, raw_x1 - pad_w)
+            crop_y1 = max(0, raw_y1 - pad_h)
+            crop_x2 = min(img.width, raw_x2 + pad_w)
+            crop_y2 = min(img.height, raw_y2 + pad_h)
+
+            crop = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
             crops.append({
-                "bbox": [x1, y1, x2 - x1, y2 - y1],
+                "bbox": [raw_x1, raw_y1, raw_x2 - raw_x1, raw_y2 - raw_y1],
                 "image": crop,
                 "confidence": float(score),
             })
