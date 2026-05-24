@@ -20,6 +20,7 @@ ENV TZ=Asia/Shanghai \
     POST_CONFIDENCE_THRESHOLD=0.0 \
     MAX_OUTPUT_PER_IMAGE=0 \
     MERGED_CLASS_POLICY=common \
+    CLASS_MAPPING=/app/class_mapping.json \
     PIL_LOG_LEVEL=ERROR
 
 RUN mkdir -p /app /saisresult
@@ -98,7 +99,7 @@ COPY classifier_output/best.pth /app/classifier_output/best.pth
 COPY yolo_dataset/detect_yolo11l/weights/best.pt /app/yolo_dataset/weights/best.pt
 
 # Character mapping: folder ID → Chinese character
-COPY char_mapping.json /app/char_mapping.json
+COPY class_mapping.json /app/class_mapping.json
 
 # Entry point
 COPY run.sh /app/run.sh

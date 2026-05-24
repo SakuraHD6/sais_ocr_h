@@ -36,7 +36,10 @@ INPUT_DIR = Path(os.getenv("INPUT_DIR", "/saisdata/13/eval/images"))
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "/saisresult/prediction.json"))
 DETECTION_WEIGHTS = os.getenv("DETECTION_WEIGHTS", "/app/yolo_dataset/weights/best.pt")
 CLASSIFIER_WEIGHTS = os.getenv("CLASSIFIER_WEIGHTS", "/app/classifier_output/best.pth")
-ID_TO_CHAR_MAPPING = os.getenv("ID_TO_CHAR_MAPPING", "/app/char_mapping.json")
+CLASS_MAPPING = os.getenv(
+    "CLASS_MAPPING",
+    os.getenv("ID_TO_CHAR_MAPPING", "/app/class_mapping.json"),
+)
 DEVICE = os.getenv("DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.45"))
 HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
@@ -74,7 +77,7 @@ def main():
     # Load models
     detector = YOLODetector(DETECTION_WEIGHTS, device, conf=CONFIDENCE_THRESHOLD,
                             half=HALF, max_det=MAX_DET, imgsz=YOLO_IMGSZ)
-    classifier = CharacterClassifier(CLASSIFIER_WEIGHTS, device, id_to_char_path=ID_TO_CHAR_MAPPING)
+    classifier = CharacterClassifier(CLASSIFIER_WEIGHTS, device, id_to_char_path=CLASS_MAPPING)
 
     image_paths = find_images()
     print(f"Images found: {len(image_paths)}")
@@ -101,6 +104,8 @@ def main():
                 bbox = crop["bbox"]
                 char_img = crop["image"]
                 char_id, rec_conf = classifier.predict(char_img)
+                if char_id is None:
+                    continue
                 det_conf = crop["confidence"]
                 predictions.append({
                     "bbox": bbox,

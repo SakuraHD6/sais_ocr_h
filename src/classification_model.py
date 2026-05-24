@@ -51,8 +51,15 @@ class CharacterClassifier:
         # Load ID → Chinese character mapping
         self.id_to_char = {}
         if id_to_char_path:
-            with open(id_to_char_path) as f:
-                self.id_to_char = json.load(f)
+            with open(id_to_char_path, encoding="utf-8") as f:
+                mapping = json.load(f)
+            if isinstance(mapping, dict):
+                if "id_to_char" in mapping:
+                    self.id_to_char = mapping["id_to_char"]
+                elif "char_mapping" in mapping:
+                    self.id_to_char = mapping["char_mapping"]
+                elif "class_to_idx" not in mapping:
+                    self.id_to_char = mapping
 
         # Build backbone
         backbone = timm.create_model(timm_name, pretrained=False, num_classes=0)
@@ -105,8 +112,33 @@ class CharacterClassifier:
             return candidates[-1]
         return min(candidates, key=self._cjk_priority)
 
+    @staticmethod
+    def _is_non_output_label(class_id):
+        if not class_id:
+            return True
+        upper = class_id.upper()
+        if upper in {"NONE", "NULL", "UNKNOWN"}:
+            return True
+        if upper.startswith(("ZH-", "ZHFD-")):
+            return True
+        if class_id.isdigit():
+            return True
+        if "_" in class_id and all(part.isdigit() for part in class_id.split("_")):
+            return True
+        return False
+
+    def _class_id_to_text(self, class_id):
+        char = self.id_to_char.get(class_id)
+        if char is None and "_" in class_id:
+            char = self._resolve_merged_class(class_id)
+        if char is not None:
+            return char
+        if self._is_non_output_label(class_id):
+            return None
+        return class_id
+
     def predict(self, pil_image):
-        """Classify a single character crop. Returns (char, confidence)."""
+        """Classify a single character crop. Returns (text, confidence)."""
         img = self.transform(pil_image).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
@@ -116,10 +148,4 @@ class CharacterClassifier:
             confidence, pred_idx = probs.max(1)
 
         class_id = self.idx_to_class[pred_idx.item()]
-        # Convert numeric ID to Chinese character if mapping exists
-        char = self.id_to_char.get(class_id)
-        if char is None and '_' in class_id:
-            char = self._resolve_merged_class(class_id)
-        if char is None:
-            char = class_id
-        return char, confidence.item()
+        return self._class_id_to_text(class_id), confidence.item()
