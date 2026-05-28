@@ -41,7 +41,7 @@ CLASS_MAPPING = os.getenv(
     os.getenv("ID_TO_CHAR_MAPPING", "/app/class_mapping.json"),
 )
 DEVICE = os.getenv("DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.45"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.20"))
 HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
 MAX_DET = int(os.getenv("MAX_DET", "100"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
