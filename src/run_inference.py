@@ -32,7 +32,7 @@ from src.detection_model import YOLODetector, filter_predictions
 from src.classification_model import CharacterClassifier
 
 
-INPUT_DIR = Path(os.getenv("INPUT_DIR", "/saisdata/13/eval/images"))
+INPUT_DIR = Path(os.getenv("INPUT_DIR", "/saisdata/50/eval/images"))
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "/saisresult/prediction.json"))
 DETECTION_WEIGHTS = os.getenv("DETECTION_WEIGHTS", "/app/yolo_dataset/weights/best.pt")
 CLASSIFIER_WEIGHTS = os.getenv("CLASSIFIER_WEIGHTS", "/app/classifier_output/best.pth")
@@ -52,7 +52,7 @@ MAX_OUTPUT_PER_IMAGE = int(os.getenv("MAX_OUTPUT_PER_IMAGE", "0"))
 
 
 def find_images():
-    suffixes = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+    suffixes = {".png"}
     if INPUT_DIR.exists():
         return sorted(
             p for p in INPUT_DIR.iterdir()

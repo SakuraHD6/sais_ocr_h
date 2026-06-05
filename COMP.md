@@ -68,7 +68,7 @@
 | 甲骨文预训练数据 | 识别模型预训练 | 约 77,000 | PNG + JSON | HUST-OBC |
 | 跨域训练数据 | 端到端检测和识别训练 | 6,000 | PNG + XML | 比赛平台 |
 | PDF 文献数据 | 额外训练增强资源 | 约 500 | PDF | ModelScope |
-| 评测数据 | 最终在线评测 | 约 1,000 | PNG | 比赛平台 |
+| 评测数据 | 最终在线评测 | 约 500 | PNG | 比赛平台 |
 
 ### 3.1 甲骨文预训练数据
 
@@ -127,7 +127,7 @@ XML 关键字段：
 比赛平台会自动把评测图片挂载到容器内：
 
 ```text
-/saisdata/13/eval/images/
+/saisdata/50/eval/images/
 ├── image_id_1.png
 ├── image_id_2.png
 └── ...
@@ -136,7 +136,8 @@ XML 关键字段：
 说明：
 
 - 图片格式为 PNG。
-- 图片数量约 1000 张。
+- 图片文件名为 `图片ID.png`。
+- 图片数量约 500 张。
 - 图片文件名去掉 `.png` 后缀后就是 `prediction.json` 中的 `image_id`。
 - 评测数据不包含标注文件。
 - 不要向 `/saisdata` 写入任何结果。
@@ -144,7 +145,7 @@ XML 关键字段：
 当前项目默认读取：
 
 ```text
-/saisdata/13/eval/images
+/saisdata/50/eval/images
 ```
 
 如果该目录不存在，代码会递归搜索 `/saisdata` 下的图片。
@@ -182,7 +183,7 @@ F1        = 2 * Precision * Recall / (Precision + Recall)
 输入目录：
 
 ```text
-/saisdata/13/eval/images/
+/saisdata/50/eval/images/
 ```
 
 输出文件：
@@ -253,7 +254,7 @@ crpi-cnoiz6qm6ajuv6bh.cn-shenzhen.personal.cr.aliyuncs.com/deng_h/saic_ocr_h:v1
 | `/app/yolo_dataset/weights/best.pt` | YOLO 检测权重 |
 | `/app/classifier_output/best.pth` | 字符分类权重 |
 | `/app/char_mapping.json` | 字符映射文件 |
-| `/saisdata/13/eval/images` | 默认输入图片目录 |
+| `/saisdata/50/eval/images` | 默认输入图片目录 |
 | `/saisresult/prediction.json` | 比赛要求输出文件 |
 
 当前推理入口：

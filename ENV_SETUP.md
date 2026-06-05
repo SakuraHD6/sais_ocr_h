@@ -415,7 +415,7 @@ docker build -t sais_ocr_h:v1 .
 
 ```bash
 docker run --rm --gpus all \
-  -v /root/data/test_images:/saisdata/13/eval/images:ro \
+  -v /root/data/test_images:/saisdata/50/eval/images:ro \
   -v /root/sais_result:/saisresult \
   sais_ocr_h:v1
 ```

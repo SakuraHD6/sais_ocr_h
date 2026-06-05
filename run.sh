@@ -9,7 +9,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # Otherwise, run inference pipeline
-echo "INPUT_DIR=${INPUT_DIR:-/saisdata/13/eval/images}"
+echo "INPUT_DIR=${INPUT_DIR:-/saisdata/50/eval/images}"
 echo "OUTPUT_FILE=${OUTPUT_FILE:-/saisresult/prediction.json}"
 
 # GPU setup
