@@ -41,17 +41,14 @@ CLASS_MAPPING = os.getenv(
     os.getenv("ID_TO_CHAR_MAPPING", "/app/class_mapping.json"),
 )
 DEVICE = os.getenv("DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.15"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.20"))
 HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
-MAX_DET = int(os.getenv("MAX_DET", "300"))
+MAX_DET = int(os.getenv("MAX_DET", "100"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
-YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.70"))
 MIN_BOX_SIZE = int(os.getenv("MIN_BOX_SIZE", "10"))
 NMS_IOU_THRESHOLD = float(os.getenv("NMS_IOU_THRESHOLD", "0.45"))
 POST_CONFIDENCE_THRESHOLD = float(os.getenv("POST_CONFIDENCE_THRESHOLD", "0.0"))
 MAX_OUTPUT_PER_IMAGE = int(os.getenv("MAX_OUTPUT_PER_IMAGE", "0"))
-CLASSIFIER_TOPK = int(os.getenv("CLASSIFIER_TOPK", "1"))
-CROP_PADDING = float(os.getenv("CROP_PADDING", "0.15"))
 
 
 def find_images():
@@ -79,8 +76,7 @@ def main():
 
     # Load models
     detector = YOLODetector(DETECTION_WEIGHTS, device, conf=CONFIDENCE_THRESHOLD,
-                            half=HALF, max_det=MAX_DET, imgsz=YOLO_IMGSZ,
-                            iou=YOLO_IOU_THRESHOLD, crop_padding=CROP_PADDING)
+                            half=HALF, max_det=MAX_DET, imgsz=YOLO_IMGSZ)
     classifier = CharacterClassifier(CLASSIFIER_WEIGHTS, device, id_to_char_path=CLASS_MAPPING)
 
     image_paths = find_images()
@@ -107,7 +103,7 @@ def main():
             for crop in crops:
                 bbox = crop["bbox"]
                 char_img = crop["image"]
-                char_id, rec_conf = classifier.predict(char_img, topk=CLASSIFIER_TOPK)
+                char_id, rec_conf = classifier.predict(char_img)
                 if char_id is None:
                     continue
                 det_conf = crop["confidence"]

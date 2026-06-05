@@ -104,15 +104,13 @@ def filter_predictions(predictions, img_width=None, img_height=None,
 
 class YOLODetector:
     def __init__(self, weights_path, device="cuda:0", conf=0.25,
-                 half=False, max_det=300, imgsz=1280, iou=0.70,
-                 crop_padding=0.15):
+                 half=False, max_det=300, imgsz=1280, crop_padding=0.15):
         self.model = YOLO(weights_path)
         self.device = device
         self.conf = conf
         self.half = half
         self.max_det = max_det
         self.imgsz = imgsz
-        self.iou = iou
         self.crop_padding = crop_padding
 
     def detect_and_crop(self, image_path):
@@ -125,7 +123,6 @@ class YOLODetector:
             half=self.half,
             max_det=self.max_det,
             imgsz=self.imgsz,
-            iou=self.iou,
         )
         crops = []
         if len(results) == 0:

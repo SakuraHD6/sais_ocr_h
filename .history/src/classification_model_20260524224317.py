@@ -137,7 +137,7 @@ class CharacterClassifier:
             return None
         return class_id
 
-    def predict(self, pil_image, topk=1):
+    def predict(self, pil_image):
         """Classify a single character crop. Returns (text, confidence)."""
         img = self.transform(pil_image).unsqueeze(0).to(self.device)
 
@@ -145,14 +145,7 @@ class CharacterClassifier:
             features = self.backbone(img)
             logits = self.arcface(features)
             probs = torch.softmax(logits, dim=1)
+            confidence, pred_idx = probs.max(1)
 
-        topk = max(1, min(int(topk), probs.shape[1]))
-        confidences, pred_indices = probs.topk(topk, dim=1)
-
-        for confidence, pred_idx in zip(confidences[0], pred_indices[0]):
-            class_id = self.idx_to_class[pred_idx.item()]
-            text = self._class_id_to_text(class_id)
-            if text is not None:
-                return text, confidence.item()
-
-        return None, confidences[0][0].item()
+        class_id = self.idx_to_class[pred_idx.item()]
+        return self._class_id_to_text(class_id), confidence.item()
