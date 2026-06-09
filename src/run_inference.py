@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""
-Inference pipeline: YOLO detection → classification.
-Reads images from INPUT_DIR, outputs prediction.json to OUTPUT_FILE.
-"""
+from __future__ import annotations
+
 import json
 import os
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 import torch
+from ultralytics import YOLO
+import timm
 
-# Suppress libpng ICCP warnings from dataset images
+
 os.environ.setdefault("PIL_LOG_LEVEL", "ERROR")
 
-# Fix random seeds for reproducibility (required by competition rules)
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
@@ -24,130 +25,252 @@ if torch.cuda.is_available():
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
-# Add parent dir for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import torch
-from src.detection_model import YOLODetector, filter_predictions
-from src.classification_model import CharacterClassifier
-
 
 INPUT_DIR = Path(os.getenv("INPUT_DIR", "/saisdata/50/eval/images"))
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "/saisresult/prediction.json"))
 DETECTION_WEIGHTS = os.getenv("DETECTION_WEIGHTS", "/app/yolo_dataset/weights/best.pt")
 CLASSIFIER_WEIGHTS = os.getenv("CLASSIFIER_WEIGHTS", "/app/classifier_output/best.pth")
-CLASS_MAPPING = os.getenv(
-    "CLASS_MAPPING",
-    os.getenv("ID_TO_CHAR_MAPPING", "/app/class_mapping.json"),
-)
 DEVICE = os.getenv("DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.18"))
-HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
-MAX_DET = int(os.getenv("MAX_DET", "300"))
-YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))
+
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.30"))
 YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.70"))
-MIN_BOX_SIZE = int(os.getenv("MIN_BOX_SIZE", "10"))
-NMS_IOU_THRESHOLD = float(os.getenv("NMS_IOU_THRESHOLD", "0.45"))
-POST_CONFIDENCE_THRESHOLD = float(os.getenv("POST_CONFIDENCE_THRESHOLD", "0.0"))
+YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1536"))
+MAX_DET = int(os.getenv("MAX_DET", "600"))
+HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
+
+CROP_PADDING = float(os.getenv("CROP_PADDING", "0.05"))
+CLASSIFIER_BATCH = int(os.getenv("CLASSIFIER_BATCH", "256"))
+MIN_BOX_SIZE = int(os.getenv("MIN_BOX_SIZE", "1"))
+FINAL_SCORE_THRESHOLD = float(os.getenv("FINAL_SCORE_THRESHOLD", "0.0"))
 MAX_OUTPUT_PER_IMAGE = int(os.getenv("MAX_OUTPUT_PER_IMAGE", "0"))
-CLASSIFIER_TOPK = int(os.getenv("CLASSIFIER_TOPK", "1"))
-CROP_PADDING = float(os.getenv("CROP_PADDING", "0.10"))
 
 
-def find_images():
-    suffixes = {".png"}
-    if INPUT_DIR.exists():
-        return sorted(
-            p for p in INPUT_DIR.iterdir()
-            if p.suffix.lower() in suffixes
+@dataclass
+class Detection:
+    bbox: tuple[float, float, float, float]
+    confidence: float
+
+
+@dataclass
+class Prediction:
+    bbox: tuple[float, float, float, float]
+    text: str
+    det_confidence: float
+    cls_confidence: float
+
+    @property
+    def score(self) -> float:
+        return self.det_confidence * self.cls_confidence
+
+
+class ClassifierTransform:
+    def __init__(self, img_size: int):
+        self.img_size = img_size
+        self.mean = torch.tensor((0.485, 0.456, 0.406), dtype=torch.float32).view(3, 1, 1)
+        self.std = torch.tensor((0.229, 0.224, 0.225), dtype=torch.float32).view(3, 1, 1)
+
+    def __call__(self, image: Image.Image) -> torch.Tensor:
+        image = image.convert("RGB").resize(
+            (self.img_size, self.img_size),
+            resample=Image.Resampling.BICUBIC,
         )
-    # Fallback: search recursively
+        array = np.asarray(image, dtype=np.float32) / 255.0
+        tensor = torch.from_numpy(array.transpose(2, 0, 1))
+        return (tensor - self.mean) / self.std
+
+
+def find_images() -> list[Path]:
+    suffixes = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+    if INPUT_DIR.exists():
+        return sorted(path for path in INPUT_DIR.iterdir() if path.suffix.lower() in suffixes)
     fallback = Path("/saisdata")
     if fallback.exists():
-        return sorted(
-            p for p in fallback.rglob("*")
-            if p.suffix.lower() in suffixes
-        )
+        return sorted(path for path in fallback.rglob("*") if path.suffix.lower() in suffixes)
     return []
 
 
-def main():
+def build_transform(img_size: int) -> ClassifierTransform:
+    return ClassifierTransform(img_size)
+
+
+def load_classifier(path: str, device: torch.device):
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    model_name = checkpoint["model_name"]
+    img_size = int(checkpoint["img_size"])
+    idx_to_class = {int(index): str(label) for index, label in checkpoint["idx_to_class"].items()}
+    model = timm.create_model(model_name, pretrained=False, num_classes=len(idx_to_class))
+    model.load_state_dict(checkpoint["model"])
+    model.to(device)
+    model.eval()
+    return model, build_transform(img_size), idx_to_class
+
+
+def clamp_box(
+    bbox: tuple[float, float, float, float],
+    image_size: tuple[int, int],
+) -> tuple[float, float, float, float] | None:
+    width, height = image_size
+    x1, y1, x2, y2 = bbox
+    x1 = max(0.0, min(float(width), x1))
+    y1 = max(0.0, min(float(height), y1))
+    x2 = max(0.0, min(float(width), x2))
+    y2 = max(0.0, min(float(height), y2))
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+    if (x2 - x1) < MIN_BOX_SIZE or (y2 - y1) < MIN_BOX_SIZE:
+        return None
+    return x1, y1, x2, y2
+
+
+def expand_box(
+    bbox: tuple[float, float, float, float],
+    image_size: tuple[int, int],
+    padding: float,
+) -> tuple[int, int, int, int]:
+    width, height = image_size
+    x1, y1, x2, y2 = bbox
+    dx = (x2 - x1) * padding
+    dy = (y2 - y1) * padding
+    left = max(0, int(round(x1 - dx)))
+    top = max(0, int(round(y1 - dy)))
+    right = min(width, int(round(x2 + dx)))
+    bottom = min(height, int(round(y2 + dy)))
+    if right <= left:
+        right = min(width, left + 1)
+    if bottom <= top:
+        bottom = min(height, top + 1)
+    return left, top, right, bottom
+
+
+def detections_from_result(result, image_size: tuple[int, int]) -> list[Detection]:
+    if result.boxes is None or len(result.boxes) == 0:
+        return []
+    xyxy = result.boxes.xyxy.detach().cpu().numpy()
+    confs = result.boxes.conf.detach().cpu().numpy()
+    detections: list[Detection] = []
+    for coords, conf in zip(xyxy, confs):
+        bbox = clamp_box(tuple(float(value) for value in coords.tolist()), image_size)
+        if bbox is not None:
+            detections.append(Detection(bbox=bbox, confidence=float(conf)))
+    return detections
+
+
+def classify_detections(
+    image_path: Path,
+    detections: list[Detection],
+    classifier,
+    transform,
+    idx_to_class: dict[int, str],
+    device: torch.device,
+    *,
+    batch_size: int,
+    crop_padding: float,
+    use_half: bool,
+) -> list[Prediction]:
+    if not detections:
+        return []
+    predictions: list[Prediction] = []
+    with Image.open(image_path) as image:
+        image = image.convert("RGB")
+        image_size = image.size
+        crops = [
+            transform(image.crop(expand_box(det.bbox, image_size, crop_padding)))
+            for det in detections
+        ]
+
+    for start in range(0, len(crops), batch_size):
+        batch = torch.stack(crops[start : start + batch_size]).to(device, non_blocking=True)
+        with torch.no_grad():
+            with torch.amp.autocast("cuda", enabled=use_half and device.type == "cuda"):
+                probs = classifier(batch).softmax(dim=1)
+            confs, preds = probs.max(dim=1)
+        for offset, (pred_id, cls_conf) in enumerate(zip(preds.cpu().tolist(), confs.cpu().tolist())):
+            det = detections[start + offset]
+            pred = Prediction(
+                bbox=det.bbox,
+                text=idx_to_class[int(pred_id)],
+                det_confidence=det.confidence,
+                cls_confidence=float(cls_conf),
+            )
+            if pred.score >= FINAL_SCORE_THRESHOLD:
+                predictions.append(pred)
+    return predictions
+
+
+def format_bbox(bbox: tuple[float, float, float, float]) -> list[int]:
+    x1, y1, x2, y2 = bbox
+    x = int(round(x1))
+    y = int(round(y1))
+    w = max(1, int(round(x2 - x1)))
+    h = max(1, int(round(y2 - y1)))
+    return [x, y, w, h]
+
+
+def main() -> None:
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    device = torch.device(DEVICE)
-    print(f"Device: {device}")
-
-    # Load models
-    detector = YOLODetector(DETECTION_WEIGHTS, device, conf=CONFIDENCE_THRESHOLD,
-                            half=HALF, max_det=MAX_DET, imgsz=YOLO_IMGSZ,
-                            iou=YOLO_IOU_THRESHOLD, crop_padding=CROP_PADDING)
-    classifier = CharacterClassifier(CLASSIFIER_WEIGHTS, device, id_to_char_path=CLASS_MAPPING)
+    device = torch.device(DEVICE if torch.cuda.is_available() or not DEVICE.startswith("cuda") else "cpu")
+    use_half = HALF and device.type == "cuda"
+    print(f"device={device} half={use_half}")
 
     image_paths = find_images()
-    print(f"Images found: {len(image_paths)}")
-
+    print(f"images={len(image_paths)} input={INPUT_DIR}")
     if not image_paths:
-        with OUTPUT_FILE.open("w", encoding="utf-8") as f:
-            json.dump({}, f, ensure_ascii=False, indent=2)
-        print(f"Empty result saved: {OUTPUT_FILE}")
+        OUTPUT_FILE.write_text("{}", encoding="utf-8")
+        print(f"saved empty output: {OUTPUT_FILE}")
         return
 
-    results = {}
-    for idx, img_path in enumerate(image_paths, 1):
-        if idx == 1 or idx % 50 == 0:
-            print(f"[{idx}/{len(image_paths)}] {img_path.name}")
+    detector = YOLO(DETECTION_WEIGHTS)
+    classifier, cls_transform, idx_to_class = load_classifier(CLASSIFIER_WEIGHTS, device)
+    results: dict[str, list[dict]] = {}
 
-        image_id = img_path.stem
+    yolo_results = detector.predict(
+        source=[str(path) for path in image_paths],
+        imgsz=YOLO_IMGSZ,
+        conf=CONFIDENCE_THRESHOLD,
+        iou=YOLO_IOU_THRESHOLD,
+        max_det=MAX_DET,
+        device=str(device),
+        half=use_half,
+        stream=True,
+        verbose=False,
+    )
+
+    for index, (fallback_path, result) in enumerate(zip(image_paths, yolo_results), 1):
+        if index == 1 or index % 50 == 0:
+            print(f"[{index}/{len(image_paths)}] {fallback_path.name}")
+        result_path = Path(str(getattr(result, "path", fallback_path)))
+        image_path = result_path if result_path.exists() else fallback_path
+        image_id = image_path.stem
         try:
-            # Step 1: Detect character regions with YOLO
-            crops = detector.detect_and_crop(str(img_path))
-
-            # Step 2: Classify each crop
-            predictions = []
-            for crop in crops:
-                bbox = crop["bbox"]
-                char_img = crop["image"]
-                char_id, rec_conf = classifier.predict(char_img, topk=CLASSIFIER_TOPK)
-                if char_id is None:
-                    continue
-                det_conf = crop["confidence"]
-                predictions.append({
-                    "bbox": bbox,
-                    "text": char_id,
-                    "confidence": float(det_conf),
-                    "recognition_confidence": float(rec_conf),
-                })
-
-            predictions = filter_predictions(
-                predictions,
-                min_size=MIN_BOX_SIZE,
-                conf_threshold=POST_CONFIDENCE_THRESHOLD,
-                nms_threshold=NMS_IOU_THRESHOLD,
+            with Image.open(image_path) as image:
+                image_size = image.size
+            detections = detections_from_result(result, image_size)
+            predictions = classify_detections(
+                image_path,
+                detections,
+                classifier,
+                cls_transform,
+                idx_to_class,
+                device,
+                batch_size=CLASSIFIER_BATCH,
+                crop_padding=CROP_PADDING,
+                use_half=use_half,
             )
             if MAX_OUTPUT_PER_IMAGE > 0 and len(predictions) > MAX_OUTPUT_PER_IMAGE:
-                predictions = sorted(
-                    predictions,
-                    key=lambda item: item.get("confidence", 0.0),
-                    reverse=True,
-                )[:MAX_OUTPUT_PER_IMAGE]
-            predictions = sorted(predictions, key=lambda item: (item["bbox"][1], item["bbox"][0]))
-
+                predictions = sorted(predictions, key=lambda item: item.score, reverse=True)[:MAX_OUTPUT_PER_IMAGE]
+            predictions = sorted(predictions, key=lambda item: (item.bbox[1], item.bbox[0]))
             results[image_id] = [
-                {
-                    "bbox": [int(v) for v in pred["bbox"]],
-                    "text": str(pred["text"]),
-                }
+                {"bbox": format_bbox(pred.bbox), "text": pred.text}
                 for pred in predictions
             ]
-        except Exception as e:
-            print(f"Warning: failed to process {img_path}: {e}")
+        except Exception as exc:
+            print(f"warning: failed to process {image_path}: {exc}")
             results[image_id] = []
 
-    with OUTPUT_FILE.open("w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
-    print(f"Saved: {OUTPUT_FILE}")
-    print(f"Total images processed: {len(results)}")
+    OUTPUT_FILE.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"saved={OUTPUT_FILE} images={len(results)}")
 
 
 if __name__ == "__main__":
