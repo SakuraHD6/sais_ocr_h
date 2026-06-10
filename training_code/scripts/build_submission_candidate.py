@@ -35,6 +35,7 @@ ENV DEVICE=cuda:0
 ENV CONFIDENCE_THRESHOLD={confidence_threshold}
 ENV YOLO_IOU_THRESHOLD={yolo_iou_threshold}
 ENV YOLO_IMGSZ={yolo_imgsz}
+ENV YOLO_FALLBACK_IMGSZ=1280,1024,768
 ENV MAX_DET={max_det}
 ENV CROP_PADDING={crop_padding}
 ENV CLASSIFIER_BATCH={classifier_batch}
@@ -127,6 +128,7 @@ def main() -> None:
             "CONFIDENCE_THRESHOLD": best_value(best, "det_conf", "0.20"),
             "YOLO_IOU_THRESHOLD": best_value(best, "det_iou", "0.70"),
             "YOLO_IMGSZ": int(best_value(best, "imgsz", 1536)),
+            "YOLO_FALLBACK_IMGSZ": "1280,1024,768",
             "MAX_DET": int(best_value(best, "max_det", 600)),
             "CROP_PADDING": best_value(best, "crop_padding", "0.10"),
             "CLASSIFIER_BATCH": int(best_value(best, "cls_batch", 256)),

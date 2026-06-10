@@ -35,6 +35,7 @@ DEVICE = os.getenv("DEVICE", "cuda:0" if torch.cuda.is_available() else "cpu")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.20"))
 YOLO_IOU_THRESHOLD = float(os.getenv("YOLO_IOU_THRESHOLD", "0.70"))
 YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1536"))
+YOLO_FALLBACK_IMGSZ = os.getenv("YOLO_FALLBACK_IMGSZ", "1280,1024,768")
 MAX_DET = int(os.getenv("MAX_DET", "600"))
 HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
 
@@ -100,9 +101,61 @@ def load_classifier(path: str, device: torch.device):
     idx_to_class = {int(index): str(label) for index, label in checkpoint["idx_to_class"].items()}
     model = timm.create_model(model_name, pretrained=False, num_classes=len(idx_to_class))
     model.load_state_dict(checkpoint["model"])
+    del checkpoint
     model.to(device)
     model.eval()
     return model, build_transform(img_size), idx_to_class
+
+
+def is_cuda_oom(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return isinstance(exc, torch.cuda.OutOfMemoryError) or (
+        "cuda" in text and "out of memory" in text
+    )
+
+
+def detector_imgsz_attempts() -> list[int]:
+    attempts = [YOLO_IMGSZ]
+    for raw_value in YOLO_FALLBACK_IMGSZ.split(","):
+        raw_value = raw_value.strip()
+        if not raw_value:
+            continue
+        value = int(raw_value)
+        if value > 0 and value not in attempts:
+            attempts.append(value)
+    return attempts
+
+
+def predict_one_image(detector: YOLO, image_path: Path, device: torch.device, use_half: bool):
+    attempts = detector_imgsz_attempts()
+    for index, imgsz in enumerate(attempts):
+        try:
+            results = detector.predict(
+                source=str(image_path),
+                imgsz=imgsz,
+                conf=CONFIDENCE_THRESHOLD,
+                iou=YOLO_IOU_THRESHOLD,
+                max_det=MAX_DET,
+                device=str(device),
+                batch=1,
+                half=use_half,
+                stream=False,
+                verbose=False,
+            )
+            return results[0] if results else None
+        except Exception as exc:
+            if not is_cuda_oom(exc):
+                raise
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if index + 1 < len(attempts):
+                print(
+                    f"warning: CUDA OOM for {image_path.name} at imgsz={imgsz}; "
+                    f"retrying imgsz={attempts[index + 1]}",
+                    flush=True,
+                )
+    print(f"warning: CUDA OOM for {image_path.name} at all image sizes", flush=True)
+    return None
 
 
 def clamp_box(
@@ -175,43 +228,50 @@ def classify_detections(
     with Image.open(image_path) as image:
         image = image.convert("RGB")
         image_size = image.size
-        crops = [
-            transform(image.crop(expand_box(det.bbox, image_size, crop_padding)))
-            for det in detections
-        ]
-
-    for start in range(0, len(crops), batch_size):
-        batch = torch.stack(crops[start : start + batch_size]).to(device, non_blocking=True)
-        with torch.no_grad():
-            with torch.amp.autocast("cuda", enabled=use_half and device.type == "cuda"):
-                probs = classifier(batch).softmax(dim=1)
-            confs, preds = probs.max(dim=1)
-        for offset, (pred_id, cls_conf) in enumerate(zip(preds.cpu().tolist(), confs.cpu().tolist())):
-            det = detections[start + offset]
-            pred = Prediction(
-                bbox=det.bbox,
-                text=idx_to_class[int(pred_id)],
-                det_confidence=det.confidence,
-                cls_confidence=float(cls_conf),
-            )
-            if pred.score >= FINAL_SCORE_THRESHOLD:
-                predictions.append(pred)
+        for start in range(0, len(detections), batch_size):
+            batch_detections = detections[start : start + batch_size]
+            crops = [
+                transform(image.crop(expand_box(det.bbox, image_size, crop_padding)))
+                for det in batch_detections
+            ]
+            batch = torch.stack(crops).to(device, non_blocking=True)
+            with torch.inference_mode():
+                with torch.amp.autocast("cuda", enabled=use_half and device.type == "cuda"):
+                    probs = classifier(batch).softmax(dim=1)
+                confs, preds = probs.max(dim=1)
+            for det, pred_id, cls_conf in zip(
+                batch_detections,
+                preds.cpu().tolist(),
+                confs.cpu().tolist(),
+            ):
+                pred = Prediction(
+                    bbox=det.bbox,
+                    text=idx_to_class[int(pred_id)],
+                    det_confidence=det.confidence,
+                    cls_confidence=float(cls_conf),
+                )
+                if pred.score >= FINAL_SCORE_THRESHOLD:
+                    predictions.append(pred)
     return predictions
 
 
 def format_bbox(bbox: tuple[float, float, float, float]) -> list[int]:
     x1, y1, x2, y2 = bbox
-    return [int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2))]
+    x = int(round(x1))
+    y = int(round(y1))
+    w = max(1, int(round(x2 - x1)))
+    h = max(1, int(round(y2 - y1)))
+    return [x, y, w, h]
 
 
 def main() -> None:
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     device = torch.device(DEVICE if torch.cuda.is_available() or not DEVICE.startswith("cuda") else "cpu")
     use_half = HALF and device.type == "cuda"
-    print(f"device={device} half={use_half}")
+    print(f"device={device} half={use_half}", flush=True)
 
     image_paths = find_images()
-    print(f"images={len(image_paths)} input={INPUT_DIR}")
+    print(f"images={len(image_paths)} input={INPUT_DIR}", flush=True)
     if not image_paths:
         OUTPUT_FILE.write_text("{}", encoding="utf-8")
         print(f"saved empty output: {OUTPUT_FILE}")
@@ -221,28 +281,15 @@ def main() -> None:
     classifier, cls_transform, idx_to_class = load_classifier(CLASSIFIER_WEIGHTS, device)
     results: dict[str, list[dict]] = {}
 
-    yolo_results = detector.predict(
-        source=[str(path) for path in image_paths],
-        imgsz=YOLO_IMGSZ,
-        conf=CONFIDENCE_THRESHOLD,
-        iou=YOLO_IOU_THRESHOLD,
-        max_det=MAX_DET,
-        device=str(device),
-        half=use_half,
-        stream=True,
-        verbose=False,
-    )
-
-    for index, (fallback_path, result) in enumerate(zip(image_paths, yolo_results), 1):
+    for index, image_path in enumerate(image_paths, 1):
         if index == 1 or index % 50 == 0:
-            print(f"[{index}/{len(image_paths)}] {fallback_path.name}")
-        result_path = Path(str(getattr(result, "path", fallback_path)))
-        image_path = result_path if result_path.exists() else fallback_path
+            print(f"[{index}/{len(image_paths)}] {image_path.name}", flush=True)
         image_id = image_path.stem
         try:
+            result = predict_one_image(detector, image_path, device, use_half)
             with Image.open(image_path) as image:
                 image_size = image.size
-            detections = detections_from_result(result, image_size)
+            detections = detections_from_result(result, image_size) if result is not None else []
             predictions = classify_detections(
                 image_path,
                 detections,
