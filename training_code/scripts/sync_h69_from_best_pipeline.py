@@ -132,7 +132,7 @@ def update_docker_env(submit_dir: Path, row: dict[str, Any]) -> None:
         "YOLO_IMGSZ": env_value(row, "imgsz", "1536"),
         "MAX_DET": env_value(row, "max_det", "600"),
         "CROP_PADDING": env_value(row, "crop_padding", "0.05"),
-        "CLASSIFIER_BATCH": env_value(row, "cls_batch", "256"),
+        "CLASSIFIER_BATCH": env_value(row, "cls_batch", "96"),
         "HALF": "1" if bool(row.get("det_half", True)) else "0",
         "NMS_IOU_THRESHOLD": env_value(row, "det_iou", "0.70"),
     }

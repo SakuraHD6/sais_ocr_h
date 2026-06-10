@@ -131,7 +131,7 @@ def main() -> None:
             "YOLO_FALLBACK_IMGSZ": "1280,1024,768",
             "MAX_DET": int(best_value(best, "max_det", 600)),
             "CROP_PADDING": best_value(best, "crop_padding", "0.10"),
-            "CLASSIFIER_BATCH": int(best_value(best, "cls_batch", 256)),
+            "CLASSIFIER_BATCH": int(best_value(best, "cls_batch", 96)),
             "HALF": "1" if bool(best_value(best, "det_half", True)) else "0",
         },
         "min_e2e_f1": args.min_e2e_f1,

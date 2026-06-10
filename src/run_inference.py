@@ -40,7 +40,7 @@ MAX_DET = int(os.getenv("MAX_DET", "600"))
 HALF = os.getenv("HALF", "1") not in {"0", "false", "False", "no"}
 
 CROP_PADDING = float(os.getenv("CROP_PADDING", "0.05"))
-CLASSIFIER_BATCH = int(os.getenv("CLASSIFIER_BATCH", "256"))
+CLASSIFIER_BATCH = int(os.getenv("CLASSIFIER_BATCH", "96"))
 MIN_BOX_SIZE = int(os.getenv("MIN_BOX_SIZE", "1"))
 FINAL_SCORE_THRESHOLD = float(os.getenv("FINAL_SCORE_THRESHOLD", "0.0"))
 MAX_OUTPUT_PER_IMAGE = int(os.getenv("MAX_OUTPUT_PER_IMAGE", "0"))
